@@ -1,0 +1,68 @@
+name: fleet
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'verify | scan'
+        default: 'verify'
+      workers:
+        description: 'concurrency per runner'
+        default: '120'
+  push:
+    paths:
+      - 'GO'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        slice: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: show runner
+        run: |
+          nproc; free -g | head -2; df -h / | tail -1
+          python3 -V
+
+      - name: run slice
+        run: |
+          S=$(printf "slices/slice%02d.txt" ${{ matrix.slice }})
+          O=$(printf "out/res%02d.txt" ${{ matrix.slice }})
+          mkdir -p out
+          echo "slice=$S accounts=$(wc -l < $S)"
+          M="${{ github.event.inputs.mode }}"; [ -z "$M" ] && M=verify
+          W="${{ github.event.inputs.workers }}"; [ -z "$W" ] && W=120
+          python3 -u runner_scan.py "$S" "$O" --mode "$M" --workers "$W" 2>&1 | tail -40
+
+      - name: commit results
+        if: always()
+        run: |
+          O=$(printf "out/res%02d.txt" ${{ matrix.slice }})
+          if [ -f "$O" ]; then
+            git config user.name "ci"
+            git config user.email "ci@localhost"
+            git add -f "$O"
+            git commit -m "res ${{ matrix.slice }} $(date -u +%s)" || echo "nothing to commit"
+            for i in 1 2 3 4 5; do
+              git pull --rebase --autostash origin HEAD && git push && break
+              echo "retry $i"; sleep 5
+            done
+          fi
+
+      - name: summary
+        if: always()
+        run: |
+          O=$(printf "out/res%02d.txt" ${{ matrix.slice }})
+          if [ -f "$O" ]; then
+            echo "OK:  $(grep -c ':OK:' $O)"
+            echo "BAD: $(grep -c ':BADPW:' $O)"
+            echo "ERR: $(grep -c ':ERR:' $O)"
+            echo "NOEGRESS: $(grep -c ':NOEGRESS:' $O)"
+          fi
