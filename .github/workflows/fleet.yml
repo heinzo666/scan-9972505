@@ -33,9 +33,11 @@ jobs:
 
       - name: run slice
         run: |
+          G=$(printf "slices/slice%02d.txt.gz" ${{ matrix.slice }})
           S=$(printf "slices/slice%02d.txt" ${{ matrix.slice }})
           O=$(printf "out/res%02d.txt" ${{ matrix.slice }})
           mkdir -p out
+          gunzip -c "$G" > "$S"
           echo "slice=$S accounts=$(wc -l < $S)"
           M="${{ github.event.inputs.mode }}"; [ -z "$M" ] && M=verify
           W="${{ github.event.inputs.workers }}"; [ -z "$W" ] && W=120
